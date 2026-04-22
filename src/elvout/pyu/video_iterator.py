@@ -7,7 +7,16 @@ import numpy.typing as npt
 
 
 class VideoIterator:
-    """Wrapper class around cv2.VideoCapture."""
+    """
+    Iterator over video frames.
+
+    Example:
+    ```python
+    with VideoIterator("/path") as it:
+        for frame_num, frame in it:
+            pass
+    ```
+    """
 
     def __init__(self, video_file: str | Path) -> None:
         self.cap: cv2.VideoCapture | None = None
@@ -17,7 +26,8 @@ class VideoIterator:
         self.fps: float
 
         self.cap = cv2.VideoCapture(str(video_file))
-        assert self.cap.isOpened()
+        if not self.cap.isOpened():
+            raise RuntimeError("cv2 VideoCapture could not be opened")
         self.frame_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.frame_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.expected_frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -27,13 +37,19 @@ class VideoIterator:
         return self.expected_frame_count
 
     def reset(self, pos: int = 0) -> "VideoIterator":
+        if pos < 0 or self.expected_frame_count <= pos:
+            raise ValueError(
+                f"Reset pos ({pos}) exceeds bounds [0, {self.expected_frame_count})"
+            )
+
         if self.cap is not None:
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
-            assert int(self.cap.get(cv2.CAP_PROP_POS_FRAMES)) == pos
+            if int(self.cap.get(cv2.CAP_PROP_POS_FRAMES)) != pos:
+                raise RuntimeError(f"Unable to perform exact seek to pos {pos}")
         return self
 
     def __iter__(self) -> Iterator[tuple[int, npt.NDArray[np.uint8]]]:
-        return self  # type: ignore
+        return self
 
     def __next__(self) -> tuple[int, npt.NDArray[np.uint8]]:
         if self.cap is None:
@@ -45,7 +61,8 @@ class VideoIterator:
             raise StopIteration
 
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        assert frame.dtype == np.uint8
+        if frame.dtype != np.uint8:
+            raise ValueError("Frame is not np.uint8")
         return frame_number, frame  # type: ignore
 
     # Seeking is very slow, so this API is discouraged. Similar functionality
@@ -61,9 +78,15 @@ class VideoIterator:
     #     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     #     assert ret
     #     assert frame.dtype == np.uint8
-    #     return frame  # type: ignore
+    #     return frame
 
-    def __del__(self) -> None:
+    def close(self) -> None:
         if self.cap is not None:
             self.cap.release()
             self.cap = None
+
+    def __enter__(self) -> "VideoIterator":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
