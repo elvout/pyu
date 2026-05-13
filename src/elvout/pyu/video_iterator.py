@@ -10,6 +10,14 @@ class VideoIterator:
     """
     Iterator over video frames.
 
+    Args:
+        video_file: Path to the input video.
+        cvtcolor: If True, convert frames from OpenCV's native BGR to RGB.
+            If False, frames are returned as BGR.
+        reuse_buffer: If True, reuse the same mutable frame buffer across
+            iterations when OpenCV supports it. Callers must copy returned frames
+            if they need to keep them after advancing the iterator.
+
     Example:
     ```python
     with VideoIterator("/path") as it:
@@ -18,12 +26,20 @@ class VideoIterator:
     ```
     """
 
-    def __init__(self, video_file: str | Path) -> None:
+    def __init__(
+        self,
+        video_file: str | Path,
+        cvtcolor: bool = True,
+        reuse_buffer: bool = False,
+    ) -> None:
         self.cap: cv2.VideoCapture | None = None
         self.frame_height: int
         self.frame_width: int
         self.expected_frame_count: int
         self.fps: float
+        self.cvtcolor = cvtcolor
+        self.reuse_buffer = reuse_buffer
+        self._buffer: npt.NDArray[np.uint8] | None = None
 
         self.cap = cv2.VideoCapture(str(video_file))
         if not self.cap.isOpened():
@@ -46,6 +62,7 @@ class VideoIterator:
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
             if int(self.cap.get(cv2.CAP_PROP_POS_FRAMES)) != pos:
                 raise RuntimeError(f"Unable to perform exact seek to pos {pos}")
+        self._buffer = None
         return self
 
     def __iter__(self) -> Iterator[tuple[int, npt.NDArray[np.uint8]]]:
@@ -56,13 +73,21 @@ class VideoIterator:
             raise StopIteration
 
         frame_number = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
-        ret, frame = self.cap.read()
+        ret, frame = self.cap.read(self._buffer)
         if not ret:
             raise StopIteration
 
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        if frame is None:
+            raise ValueError("Frame is None")
         if frame.dtype != np.uint8:
             raise ValueError("Frame is not np.uint8")
+
+        if self.reuse_buffer:
+            self._buffer = frame
+
+        if self.cvtcolor:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB, dst=self._buffer)
+
         return frame_number, frame  # type: ignore
 
     # Seeking is very slow, so this API is discouraged. Similar functionality
@@ -84,6 +109,7 @@ class VideoIterator:
         if self.cap is not None:
             self.cap.release()
             self.cap = None
+        self._buffer = None
 
     def __enter__(self) -> "VideoIterator":
         return self
